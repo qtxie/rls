@@ -1,4 +1,4 @@
-# Red-LSP - Red Language Server
+# Red Language Server
 
 Red-LSP is a language server for the Red programming language, implementing the Language Server Protocol (LSP). It provides IDE-like features for Red developers.
 
@@ -48,7 +48,7 @@ The language server also includes diagnostic functionality that:
 Additionally, the language server provides code completion functionality that:
 1. Suggests identifiers and function names found in the current document
 2. Provides common Red language keywords as completion options
-3. Triggers completion on '.' and ':' characters
+3. Triggers completion on '/' characters
 4. Offers context-aware suggestions based on the parsed AST
 
 ## Future Enhancements

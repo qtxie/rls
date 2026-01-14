@@ -1,16 +1,5 @@
-use lsp_types::{Diagnostic, DiagnosticSeverity, Location, Position, Range};
+use lsp_types::{Diagnostic, DiagnosticSeverity, Location, Position, Range, *};
 use tree_sitter::{Node, Tree};
-use url::Url;
-
-// Helper function to get the Red language
-pub fn get_red_language() -> tree_sitter::Language {
-    // Use the LANGUAGE constant and convert it properly
-    unsafe {
-        std::mem::transmute::<tree_sitter_language::LanguageFn, tree_sitter::Language>(
-            tree_sitter_red::LANGUAGE,
-        )
-    }
-}
 
 // New function that accepts an existing tree for efficiency
 pub fn find_definition_at_position_with_tree(
@@ -38,9 +27,12 @@ pub fn find_definition_at_position_with_tree(
 
         // The URI will be set by the caller to match the current document
         // Using a placeholder URI here that will be replaced
-        let uri = Url::parse("file:///placeholder").ok()?;
+        let uri = "file:///placeholder".parse::<Uri>().ok()?;
 
-        Some(Location { uri, range })
+        Some(Location {
+            uri: uri.clone(),
+            range,
+        })
     } else {
         None
     }
@@ -135,27 +127,15 @@ fn is_definition_node(node: &Node) -> bool {
     // - Function definitions: `func-name: func [...] [...]`
     // - Variable assignments: `var-name: value`
     // This depends on the tree-sitter-red grammar
-    node.kind() == "assignment" || node.kind() == "function_definition"
+    node.kind() == "does" || node.kind() == "function" || node.kind() == "context"
 }
 
 fn node_matches_name(source_code: &str, node: &Node, name: &str) -> bool {
     // Extract the identifier/name from the definition node
     // This depends on the exact structure of the tree-sitter-red grammar
 
-    // For assignment nodes, the left side is usually the name being defined
-    if node.kind() == "assignment" {
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "word" || child.kind() == "identifier" {
-                if get_node_text(source_code, &child).map_or(false, |text| text == name) {
-                    return true;
-                }
-            }
-        }
-    }
-
     // For function definitions, the name is typically the first child
-    if node.kind() == "function_definition" {
+    if node.kind() == "function" {
         if let Some(first_child) = node.child(0) {
             if get_node_text(source_code, &first_child).map_or(false, |text| text == name) {
                 return true;
@@ -167,7 +147,14 @@ fn node_matches_name(source_code: &str, node: &Node, name: &str) -> bool {
 }
 
 fn get_node_text<'a>(source_code: &'a str, node: &Node) -> Option<&'a str> {
-    Some(&source_code[node.start_byte()..node.end_byte()])
+    let start_byte = node.start_byte();
+    let end_byte = node.end_byte();
+
+    if start_byte <= source_code.len() && end_byte <= source_code.len() && start_byte <= end_byte {
+        Some(&source_code[start_byte..end_byte])
+    } else {
+        None
+    }
 }
 
 fn ts_range_to_lsp_range(start_byte: usize, end_byte: usize, source: &str) -> Range {

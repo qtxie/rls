@@ -55,16 +55,37 @@ impl RedLanguageServer {
     fn handle_text_document_did_open(&mut self, params: DidOpenTextDocumentParams) {
         let mut parser = Parser::new();
         // Set the parser language to Red
-        let lang = parser::get_red_language();
-        parser.set_language(lang).ok();
+        let lang = tree_sitter_red::LANGUAGE;
+        match parser.set_language(&lang.into()) {
+            Ok(()) => {
+                eprintln!("Successfully set language for parser");
+            }
+            Err(e) => {
+                eprintln!("Failed to set language for parser: {:?}", e);
+                // Return early if we can't set the language
+                return;
+            }
+        }
 
         // Parse the full document
         let tree = parser.parse(&params.text_document.text, None);
+        if tree.is_none() {
+            eprintln!("Failed to parse document");
+        } else {
+            // Check if the tree has errors
+            if let Some(ref t) = tree {
+                if t.root_node().has_error() {
+                    eprintln!("Parse tree contains errors");
+                }
+            }
+        }
 
         // Compute diagnostics for the parsed tree
         let diagnostics = if let Some(ref t) = tree {
+            info!("{}", t.root_node().to_sexp());
             parser::get_diagnostics(&params.text_document.text, t)
         } else {
+            info!("empty tree");
             vec![]
         };
 
@@ -92,15 +113,17 @@ impl RedLanguageServer {
                     // Store the old content length before the change
                     let _old_length = document.content.len();
 
+                    // Store the original content before the change
+                    let old_content = document.content.clone();
+
                     // Apply the change to the content
-                    document.content = apply_content_change(&document.content, &change.text, range);
+                    document.content = apply_content_change(&old_content, &change.text, range);
 
                     // Update the tree incrementally if it exists
                     if let Some(ref mut tree) = document.tree {
                         // Calculate the byte positions and points for the edit
-                        let start_byte = position_to_offset(&document.content, range.start);
-                        let old_end_byte = start_byte
-                            + (position_to_offset(&document.content, range.end) - start_byte);
+                        let start_byte = position_to_offset(&old_content, range.start);
+                        let old_end_byte = position_to_offset(&old_content, range.end);
                         let new_end_byte = start_byte + change.text.len();
 
                         // Calculate the start and end points
@@ -116,8 +139,7 @@ impl RedLanguageServer {
                         };
 
                         // Calculate the new end point based on the inserted text
-                        let new_end_position =
-                            calculate_new_end_position(&document.content, range, &change.text);
+                        let new_end_position = calculate_new_end_position(&document.content, range, &change.text);
 
                         // Tell the parser about the change
                         tree.edit(&tree_sitter::InputEdit {
@@ -131,11 +153,19 @@ impl RedLanguageServer {
 
                         // Re-parse the modified tree
                         document.tree = document.parser.parse(&document.content, Some(tree));
+                        if document.tree.is_none() {
+                            eprintln!("Failed to re-parse document after edit");
+                            // Fallback to full reparse
+                            document.tree = document.parser.parse(&document.content, None);
+                        }
                     }
                 } else {
                     // Full document replacement - reparse from scratch
                     document.content = change.text;
                     document.tree = document.parser.parse(&document.content, None);
+                    if document.tree.is_none() {
+                        eprintln!("Failed to re-parse document after full replacement");
+                    }
                 }
             }
 
@@ -191,7 +221,7 @@ impl RedLanguageServer {
         Some(lsp_types::CompletionResponse::Array(Vec::new()))
     }
 
-    fn publish_diagnostics(&self, uri: &lsp_types::Url, diagnostics: Vec<lsp_types::Diagnostic>) {
+    fn publish_diagnostics(&self, uri: &lsp_types::Uri, diagnostics: Vec<lsp_types::Diagnostic>) {
         use serde_json::json;
 
         let params = lsp_types::PublishDiagnosticsParams {
@@ -296,19 +326,21 @@ fn position_to_offset(text: &str, position: Position) -> usize {
 
 fn calculate_new_end_position(content: &str, range: Range, new_text: &str) -> tree_sitter::Point {
     // Calculate the end position after inserting new_text
-    // Start from the range.start position and count the characters in new_text
+    // We need to calculate the position based on the start position plus the new text
     let start_line = range.start.line as usize;
-    let start_char = range.start.character as usize;
 
     // Count newlines in the new text to determine how many lines were added
     let newline_count = new_text.matches('\n').count();
-    let last_line_length = new_text.len() - new_text.rfind('\n').map(|i| i + 1).unwrap_or(0);
+
+    // Calculate the column position in the last line of the new text
+    let last_line_start = new_text.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let last_line_length = new_text[last_line_start..].len();
 
     if newline_count == 0 {
-        // Same line - just add the character count
+        // Same line - just add the character count to the start character
         tree_sitter::Point {
             row: start_line,
-            column: start_char + last_line_length,
+            column: range.start.character as usize + last_line_length,
         }
     } else {
         // Multiple lines - calculate the final position
@@ -320,7 +352,9 @@ fn calculate_new_end_position(content: &str, range: Range, new_text: &str) -> tr
 }
 
 fn main() -> Result<()> {
-    env_logger::init();
+    env_logger::Builder::new()
+        .filter_level(log::LevelFilter::Debug)
+        .init();
 
     info!("Starting Red language server");
     // Create the transport
